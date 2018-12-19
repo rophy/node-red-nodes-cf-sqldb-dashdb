@@ -13,6 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  **/
+
+var ibm_db = require('ibm_db');
+var dbPool = new ibm_db.Pool();
+
 module.exports = function(RED) {
 
     var cfEnv = require("cfenv");
@@ -64,7 +68,6 @@ module.exports = function(RED) {
 
         RED.nodes.createNode(this,n);
 
-        var db              = require('ibm_db')();
         this.table          = n.table;
         var dashDBconfig    = _getdashDBconfig(n);
         var columnList      = null;
@@ -92,22 +95,14 @@ module.exports = function(RED) {
              }
           }
 
-        node.on("close", function() {
-           console.log("dashDB: Closing db connection...");
-           db.closeSync();
-           console.log("dashDB output node: Connection closed");
-        });
+        // node.on("close", function() {
+           // console.log("dashDB: Closing db connection...");
+           // db.closeSync();
+           // console.log("dashDB output node: Connection closed");
+        // });
 
         node.on("input", function(msg) {
-
-           if (!db.connected) {
-              console.log("DB2 output node: Database not connected; connecting first...");
-              db.open(connString,doTheRest);
-            }
-            else {
-              //console.log("We are connected because the value for db.connected is: " + db.connected);
-              doTheRest(null,db);
-            }
+            dbPool.open(connString, doTheRest);
 
             function doTheRest (err,conn) {
               if (err) {
@@ -117,7 +112,7 @@ module.exports = function(RED) {
 
               if (columnList == null) {
                 try {
-                 columnList = getColumns(node,db,node.table,"dashDB output node");
+                 columnList = getColumns(node,conn,node.table,"dashDB output node");
                 } catch (err) {
                   node.error("dashDB output node: " + err, msg);
                   return;
@@ -133,13 +128,13 @@ module.exports = function(RED) {
                  console.log("dashDB output node: Preparing insert statement: " + insertStatement);
                }
 
-               db.prepare(insertStatement, function (err, stmt) {
+               conn.prepare(insertStatement, function (err, stmt) {
                if (err) {
                   node.error("dashDB output node: " + err, msg);
                }
                else  {
                   console.log("dashDB output node: Prepare successful");
-                  processInput(node,msg,db,stmt,columnList,"dashDB");
+                  processInput(node,msg,conn,stmt,columnList,"dashDB");
                }
               });
             }
@@ -148,13 +143,13 @@ module.exports = function(RED) {
 
 RED.nodes.registerType("dashDB out", dashDBOutNode);
 
-function getColumns (node,db,table,service) {
+function getColumns (node,conn,table,service) {
       //Remove the schema, if it exists, hopefully the table name is unique - need to improve this
       var removeSchema = table.split(".");
       if (removeSchema.length > 1) { table = removeSchema[1]; }
       console.log(service+": Fetching column names for table " + table + "...");
       var sysibmColumns;
-      sysibmColumns = db.querySync("select name from sysibm.syscolumns where tbname = '"+table+"' and generated = ''");
+      sysibmColumns = conn.querySync("select name from sysibm.syscolumns where tbname = '"+table+"' and generated = ''");
 
       if (sysibmColumns.length == 0) {
          throw new Error(service+": table "+table+" not found - is it defined?  Case matters.");
@@ -167,7 +162,7 @@ function getColumns (node,db,table,service) {
      return columnList;
      }
 
-function processInput (node,msg,db,stmt,columnList,service) {
+function processInput (node,msg,conn,stmt,columnList,service) {
       var valueToInsert;
       var batchInsert;
       var valueList;
@@ -182,7 +177,7 @@ function processInput (node,msg,db,stmt,columnList,service) {
          batchInsert = false;
          insertIterations = 1;
          }
-//      db.beginTransaction(function (err) {
+//      conn.beginTransaction(function (err) {
 //         if (err) node.error(service+": "+err);
          for (var i = 0; i < insertIterations; i++) {
             valueList = [];
@@ -203,21 +198,17 @@ function processInput (node,msg,db,stmt,columnList,service) {
             console.log("Values to execute:");
             console.log(valueList);
             stmt.execute(valueList, function (err, result) {
+               conn.close();
                if (err) {
                   node.error(service+": Insert failed: "+err, msg);
-                  if(err.message.indexOf('30081') > -1) {
-                     console.log("30081 connection error detected; will flag the connection to reconnect on next try");
-                     db.connected = false;
-                  }
                    // since Catch node caught exception, expect the node not to send msg to output.
                    return;
                } else {
                   console.log(service+": Insert successful!");
-                  result.closeSync();
                }
             });
          }
-//      db.commitTransaction(function(err){
+//      conn.commitTransaction(function(err){
 //      if (err) {
 //              console.log(service+": Error during commit: " + err);
 //           }
@@ -286,7 +277,6 @@ function genDB2Timestamp() {
 function dashDBQueryNode(n) {
 
         RED.nodes.createNode(this,n);
-        var db              = require('ibm_db')();
         var query           = n.query;
         var params          = n.params;
         var dashDBconfig    = _getdashDBconfig(n);
@@ -310,21 +300,14 @@ function dashDBQueryNode(n) {
              }
           }
 
-        node.on("close", function() {
-           console.log("DB2 query node: Closing db connection...");
-           db.closeSync();
-           console.log("DB2 query node: Connection closed");
-        });
+        // node.on("close", function() {
+           // console.log("DB2 query node: Closing db connection...");
+           // db.closeSync();
+           // console.log("DB2 query node: Connection closed");
+        // });
 
         this.on('input', function(msg) {
-           if (!db.connected) {
-              console.log("DB2 query node: Database not connected; connecting first...");
-              db.open(connString,doTheRest);
-            }
-            else {
-              //console.log("We are connected because the value for db.connected is: " + db.connected);
-              doTheRest(null,db);
-            }
+          dbPool.open(connString, doTheRest);
 
           function doTheRest (err,conn) {
               if (err) {
@@ -349,15 +332,12 @@ function dashDBQueryNode(n) {
                     parameterValues = extractValues(msg, path);
                     console.log("Input node: parameterValues: " + parameterValues);
                  }
-                 db.query(queryToUse,parameterValues,function (err, rows, moreResultSets) {
+                 conn.query(queryToUse,parameterValues,function (err, rows, moreResultSets) {
                     queryresult = null;
+                    conn.close();
                     if (err) {
                        node.error("DB2 query node, error in query: " + err, msg);
                        msg.error = err;
-                       if(err.message.indexOf('30081') > -1) {
-                          console.log("30081 connection error detected; will flag the connection to reconnect on next try");
-                          db.connected = false;
-                       }
                        // since Catch node caught exception, expect the node not to send msg to output.
                        return;
                     } else {
